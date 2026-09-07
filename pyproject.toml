@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pythonos-nano"
+version = "0.1.0"
+description = "Nano-scale validation of the PythonOS-1B MoE architecture (locked v1.1 spec)"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "numpy",
+]
+
+[project.optional-dependencies]
+# only needed to build the corpus (data/pythonos_code/prepare.py)
+data = ["tiktoken", "datasets", "tqdm", "requests"]
+# optional run logging
+logging = ["wandb"]
+
+[tool.setuptools]
+packages = ["pythonos"]

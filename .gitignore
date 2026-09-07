@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# tokenised corpora and raw downloads — regenerate via data/*/prepare.py.
+# NOTE: manifest.json IS tracked, so the frozen slice stays verifiable by
+# sha256 without committing gigabytes of .bin.
+*.bin
+data/*/input.txt
+data/*/meta.pkl
+
+# checkpoints / run outputs
+out/
+out-*/
+wandb/
