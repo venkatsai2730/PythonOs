@@ -10,9 +10,10 @@ any training failure unattributable to a specific cause. So this repo builds
 and validates **one component at a time** at ~150M params on a single GPU,
 against a dense baseline that never moves.
 
-Independent implementation, MIT licensed. The techniques are published
-research (Vaswani, DeepSeek, Su, Fedus, Loshchilov et al.) — see `NOTICE.md`
-for the full attribution table and the repository's provenance.
+Independent implementation. No licence is granted for reuse: all rights
+reserved. The techniques are published research (Vaswani, DeepSeek, Su, Fedus,
+Loshchilov et al.) — see `NOTICE.md` for the full attribution table and the
+repository's provenance.
 
 ## The core discipline
 
