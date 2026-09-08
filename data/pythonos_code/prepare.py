@@ -10,12 +10,12 @@ a single run of this script. Re-running it with different settings invalidates
 every cross-stage comparison. The manifest exists so you can prove, later, that
 a given run used this slice.
 
-  $ python data/pythonos_code/prepare.py                  # ~400M tokens
-  $ python data/pythonos_code/prepare.py --target 50e6    # small trial slice
+  $ python data/pythonos_code/prepare.py                  # ~400M tokens (Stage A)
+  $ python data/pythonos_code/prepare.py --target 10e6    # dev slice, minutes
 
-the-stack-dedup is a gated dataset: accept the terms on its HF page and
-`huggingface-cli login` first. --dataset codeparrot/codeparrot-clean is an
-ungated fallback.
+The default source (codeparrot/codeparrot-clean) is ungated. the-stack-dedup
+is larger but requires accepting its terms and huggingface-cli login first.
+
 """
 
 import argparse
@@ -29,14 +29,20 @@ from datasets import load_dataset
 from tqdm import tqdm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-VAL_FRACTION = 0.0005  # ~200k tokens of val at a 400M-token target
+# Held-out fraction. Floored at 100k tokens so a small dev slice still has a
+# usable validation set; at the full 400M target this is ~200k tokens.
+VAL_FRACTION = 0.02
 SEED = 1337
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--target", type=float, default=400e6,
                     help="target total tokens (train + val)")
-parser.add_argument("--dataset", default="bigcode/the-stack-dedup",
-                    help="HF dataset id; use codeparrot/codeparrot-clean if ungated")
+parser.add_argument("--dataset", default="codeparrot/codeparrot-clean",
+                    help="HF dataset id. The default is ungated. "
+                         "bigcode/the-stack-dedup is larger but requires "
+                         "accepting its terms and huggingface-cli login.")
+parser.add_argument("--split", default="train",
+                    help="dataset split to stream")
 parser.add_argument("--data-dir", default="data/python",
                     help="dataset subdirectory (the-stack-dedup only)")
 args = parser.parse_args()
@@ -47,7 +53,7 @@ val_tokens = max(int(target_tokens * VAL_FRACTION), 100_000)
 enc = tiktoken.get_encoding("gpt2")
 eot = enc.eot_token  # 50256, document separator
 
-load_kwargs = dict(split="train", streaming=True)
+load_kwargs = dict(split=args.split, streaming=True)
 if "the-stack" in args.dataset:
     load_kwargs["data_dir"] = args.data_dir
 print(f"streaming {args.dataset} ({load_kwargs.get('data_dir', 'default')})")

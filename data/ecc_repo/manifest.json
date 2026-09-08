@@ -1,0 +1,17 @@
+{
+  "source": "ecc_repo",
+  "source_path": "C:\\Temp\\ecc",
+  "tokenizer": "tiktoken/gpt2",
+  "vocab_size": 50304,
+  "seed": 1337,
+  "documents": 3421,
+  "duplicates_dropped": 16,
+  "characters": 23452942,
+  "train_tokens": 10044219,
+  "val_tokens": 431384,
+  "train_sha256": "eb5d300d0a4cbf23adf449eb731d36daff2fe28a1d1da2e80a1fe0f2016489ea",
+  "val_sha256": "24b3fd3e8f7259c50b32c42e6126527524b6a781b8985754cec180892452d57f",
+  "split": "by document, so train and val share no file",
+  "frozen": true,
+  "note": "Pipeline validation corpus. NOT the Stage A corpus: too small, single-project, markdown-dominated. Never use for a stage comparison."
+}

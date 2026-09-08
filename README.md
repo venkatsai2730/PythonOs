@@ -96,6 +96,47 @@ Read it before starting a stage.
 **Nothing has been trained yet.** There are no weights in this repo and no
 base model — it is a verified architecture implementation plus a test harness.
 
+## Pipeline validation run
+
+The full path — corpus build, loader, model, training loop, checkpoint,
+resume, eval — has been exercised end to end on real text. **This is not
+Stage A** and its numbers are not a baseline: the corpus is a single project's
+repository, the model is 16M params rather than 153M, and it saw 0.8M tokens
+rather than 400M.
+
+```bash
+git clone --depth 1 https://github.com/affaan-m/ecc.git /c/Temp/ecc
+python data/ecc_repo/prepare.py --source /c/Temp/ecc
+python train.py configs/dev_ecc_cpu.py
+python scripts/evaluate.py --ckpt out-dev-ecc/ckpt.pt --sample
+```
+
+Corpus: 3,421 unique documents (16 exact duplicates dropped), 23.45 MB of
+text, **10.5M tokens** — 10.04M train / 431k val, split *by document* so no
+file appears on both sides. 57% markdown, 28% JavaScript, 1.7% Python.
+
+Result after 400 steps (~0.8M tokens, ~11 min on CPU):
+
+| | nats/token | ppl | bits/byte |
+|---|---|---|---|
+| uniform baseline | 10.8258 | — | — |
+| unigram baseline | 6.5539 | — | — |
+| **model, train** | 4.6426 | 103.8 | 2.610 |
+| **model, val** | 4.8331 | 125.6 | 2.773 |
+
+Generalisation gap +0.19 nats — small, as expected this early.
+
+**Read the unigram row, not the uniform row.** Beating `ln(vocab)` is nearly
+automatic. The honest number is +1.72 nats/token over unigram — **26.3%
+better than frequency counting alone** — and that is the part attributable to
+modelling context at all.
+
+Generation at this point emits only whitespace. That is not a bug: the single
+space token is 11.4% of this corpus and the model assigns it p=0.878 after a
+prompt. It does rank plausible code tokens (`if`, `return`, `const`) beneath
+it, so context modelling has begun, but 0.8M tokens is roughly 1/500th of the
+Stage A budget. Undertrained, working correctly.
+
 ## Findings so far
 
 Details, measured tables and reproduction steps in `STAGES.md`.
