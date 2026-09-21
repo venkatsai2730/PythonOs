@@ -82,6 +82,29 @@ def _apps(rec):
     return "".join(parts)
 
 
+def _code_contests(rec):
+    """DeepMind CodeContests: problem description + a Python-looking solution.
+
+    `solutions.language` is a ClassLabel whose int<->name mapping is not
+    guaranteed to resolve under streaming, so the Python solution is picked by
+    a light content heuristic (has `def`/`print(`, no `#include`) rather than
+    trusting the label id. Good enough for a training-mix filter; this is not
+    trying to be an exact per-language classifier.
+    """
+    description = rec.get("description")
+    if not description:
+        return None
+    texts = (rec.get("solutions") or {}).get("solution") or []
+    solution = next((t for t in texts if t and "#include" not in t
+                     and ("def " in t or "print(" in t)), None)
+    if solution is None and texts:
+        solution = texts[0]
+    parts = [f"# Problem\n{description}"]
+    if solution:
+        parts.append(f"\n\n# Solution\n{solution}")
+    return "".join(parts)
+
+
 def _dialogue(rec):
     """Function-calling / agentic dialogue: join system + chat if present."""
     chunks = [rec.get("system"), rec.get("chat") or rec.get("conversations")
@@ -93,8 +116,12 @@ def _dialogue(rec):
 # Edit these to change the mix. `weight` is the share of the token budget.
 # Weights are normalised, so they need not sum to 1.
 DOMAINS = {
-    "dsa": dict(dataset="codeparrot/apps", split="train", data_dir=None,
-                extract=_apps, weight=0.30),
+    # codeparrot/apps used a legacy HF "loading script", which the datasets
+    # library has dropped support for entirely (any version, any machine) —
+    # deepmind/code_contests is parquet-native and covers the same niche
+    # (competitive programming problem + solution).
+    "dsa": dict(dataset="deepmind/code_contests", split="train", data_dir=None,
+                extract=_code_contests, weight=0.30),
     "ml": dict(dataset="codeparrot/codeparrot-clean", split="train", data_dir=None,
                extract=_code, weight=0.30),
     "agentic": dict(dataset="glaiveai/glaive-function-calling-v2", split="train",
@@ -227,3 +254,11 @@ def main():
 
 if __name__ == "__main__":
     main()
+    # We `break` out of each domain's streaming iterator as soon as its quota
+    # is met, which can leave huggingface_hub/fsspec background retry threads
+    # alive and mid-request. Python's normal interpreter shutdown can then
+    # race one of them and crash with "Fatal Python error: PyGILState_Release"
+    # — harmless (train.bin/val.bin/manifest.json are already written and
+    # correct by this point) but alarming, and it can make an otherwise
+    # successful Kaggle cell look like it failed. Skip the race.
+    os._exit(0)
