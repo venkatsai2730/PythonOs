@@ -177,6 +177,28 @@ def write_report(results, dataset, max_iters, requested):
     print(f"\nwrote {md} and {js}")
 
 
+def load_previous(dataset, max_iters):
+    """Prior results from runs/proof_results.json, keyed by label.
+
+    Lets the sweep be split across several --only invocations (e.g. two
+    Kaggle sessions) and still accumulate into one report, instead of each
+    call overwriting the last. Only merges when the prior run used the exact
+    same dataset and max_iters — the same discipline as everywhere else in
+    this repo: never silently combine results from different conditions.
+    """
+    path = os.path.join(ROOT, "runs", "proof_results.json")
+    if not os.path.isfile(path):
+        return {}
+    with open(path, encoding="utf-8") as handle:
+        prior = json.load(handle)
+    if prior.get("dataset") != dataset or prior.get("max_iters") != max_iters:
+        print(f"note: runs/proof_results.json is from a different run "
+              f"(dataset={prior.get('dataset')!r}, max_iters={prior.get('max_iters')}) "
+              f"— not merging; this invocation starts a fresh report")
+        return {}
+    return {r["label"]: r for r in prior.get("results", [])}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="pythonos_multidomain")
@@ -192,11 +214,16 @@ def main():
                              "overhead proportionate to a short --max_iters)")
     args = parser.parse_args()
 
+    prior_by_label = load_previous(args.dataset, args.max_iters)
     todo = [e for e in EXPERIMENTS if not args.only or e[0] in args.only]
-    requested = {label for label, _, _ in todo}
-    results = [run_one(label, config, args.dataset, args.max_iters,
-                       args.device, args.t4, args.eval_iters)
-               for label, config, _ in todo]
+    new_results = [run_one(label, config, args.dataset, args.max_iters,
+                           args.device, args.t4, args.eval_iters)
+                   for label, config, _ in todo]
+
+    # new results for a label replace any prior entry with the same label
+    merged = {**prior_by_label, **{r["label"]: r for r in new_results}}
+    requested = set(prior_by_label) | {label for label, _, _ in todo}
+    results = [merged[label] for label, _, _ in EXPERIMENTS if label in merged]
     write_report(results, args.dataset, args.max_iters, requested)
 
 
