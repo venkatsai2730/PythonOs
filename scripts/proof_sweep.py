@@ -22,6 +22,13 @@ Notes
   baseline, because MLA presumes RoPE; comparing to A would confound the two.
 - torch.compile is disabled for every run (it needs a C++ toolchain and is
   often slower than it saves at nano shapes); --t4 additionally uses float16.
+- eval_interval is forced to exactly --max_iters (overriding whatever a stage
+  config sets, e.g. stage_a_nano.py's 250). Without this, a run whose budget
+  isn't a multiple of the config's eval_interval never evaluates at its own
+  final step — the "final val" this script parses would silently be a stale
+  mid-run number (at budget 20 it would be the PRE-training step-0 val, i.e.
+  no training signal at all). This guarantees exactly two evals per run: one
+  at step 0 (the untrained baseline) and one at step max_iters (the result).
 """
 
 import argparse
@@ -51,12 +58,17 @@ RE_MOE = re.compile(r"MoE:\s*([\d.]+)M total,\s*([\d.]+)M active")
 RE_EVAL = re.compile(r"step\s+(\d+):\s*train\s+([\d.]+)\s+val\s+([\d.]+)")
 
 
-def run_one(label, config, dataset, max_iters, device, t4):
+def run_one(label, config, dataset, max_iters, device, t4, eval_iters):
     out_dir = os.path.join("runs", f"proof_{label}")
     cmd = [sys.executable, "train.py", config,
            f"--dataset={dataset}",
            f"--max_iters={max_iters}",
            f"--lr_decay_iters={max_iters}",
+           # forces an eval at step 0 (untrained) and exactly at step
+           # max_iters (the result) — see the module docstring for why this
+           # must override whatever eval_interval the stage config sets.
+           f"--eval_interval={max_iters}",
+           f"--eval_iters={eval_iters}",
            f"--out_dir={out_dir}",
            f"--device={device}",
            # torch.compile needs a C++ toolchain (MSVC `cl` on Windows) and is
@@ -67,7 +79,7 @@ def run_one(label, config, dataset, max_iters, device, t4):
         cmd += ["--dtype=float16"]
     print(f"\n{'=' * 70}\n[{label}] {' '.join(cmd)}\n{'=' * 70}")
 
-    total = active = final_val = final_train = None
+    total = active = final_val = final_train = init_val = None
     proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, bufsize=1)
     for line in proc.stdout:
@@ -77,17 +89,22 @@ def run_one(label, config, dataset, max_iters, device, t4):
         if m := RE_MOE.search(line):
             total, active = float(m.group(1)), float(m.group(2))
         if m := RE_EVAL.search(line):
+            # with eval_interval == max_iters this fires exactly twice: step 0
+            # (the untrained baseline — kept as init_val) and step max_iters
+            # (the result — final_val ends on whichever match came last)
+            if init_val is None:
+                init_val = float(m.group(3))
             final_train, final_val = float(m.group(2)), float(m.group(3))
     proc.wait()
     ok = proc.returncode == 0 and final_val is not None
     return {"label": label, "config": config, "ok": ok,
             "total_params_m": total, "active_params_m": active,
-            "final_train": final_train, "final_val": final_val}
+            "init_val": init_val, "final_train": final_train,
+            "final_val": final_val}
 
 
-def write_report(results, dataset, max_iters):
+def write_report(results, dataset, max_iters, requested):
     by_label = {r["label"]: r for r in results}
-    compare = {label: cmp for label, _, cmp in EXPERIMENTS}
 
     lines = [
         "# Nano prove-then-add results",
@@ -98,14 +115,23 @@ def write_report(results, dataset, max_iters):
         "- **lower val is better**; delta is vs the `compare` column",
         "- nano proves *correctness + per-param effect*, NOT domain dominance",
         "",
-        "| block | total (M) | active (M) | final val | compare | delta val | verdict |",
-        "|---|---|---|---|---|---|---|",
+        "| block | total (M) | active (M) | init val | final val | trained? "
+        "| compare | delta val | verdict |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for label, _, cmp in EXPERIMENTS:
+        if label not in requested:
+            lines.append(f"| {label} | — | — | — | — | — | {cmp or '—'} "
+                         f"| — | (not run — excluded by --only) |")
+            continue
         r = by_label.get(label)
         if not r or not r["ok"]:
-            lines.append(f"| {label} | — | — | **failed** | {cmp or '—'} | — | ⚠️ rerun |")
+            lines.append(f"| {label} | — | — | — | — | — | {cmp or '—'} "
+                         f"| — | **FAILED — check subprocess output above** |")
             continue
+        trained = ("✅" if (r["init_val"] is not None
+                            and r["final_val"] < r["init_val"] - 0.01)
+                   else "⚠️ no")
         base = by_label.get(cmp)
         if base and base.get("final_val") is not None:
             delta = r["final_val"] - base["final_val"]
@@ -116,11 +142,16 @@ def write_report(results, dataset, max_iters):
             dtxt, verdict = "—", "baseline" if cmp is None else "—"
         lines.append(
             f"| {label} | {r['total_params_m']:.1f} | {r['active_params_m']:.1f} "
-            f"| {r['final_val']:.3f} | {cmp or '—'} | {dtxt} | {verdict} |")
+            f"| {r['init_val']:.3f} | {r['final_val']:.3f} | {trained} "
+            f"| {cmp or '—'} | {dtxt} | {verdict} |")
 
     lines += [
         "",
         "## How to read this",
+        "- `trained?` is a cheap sanity check: did final val actually drop below",
+        "  init val by more than noise? `⚠️ no` at a very short budget usually",
+        "  means the budget was too small to see movement, not a broken block —",
+        "  raise --max_iters before reading the delta column as meaningful.",
         "- `delta val < 0` on **param-matched** rows (B2, C1-active) = a real win.",
         "- B3/B4 remove params — read the param columns before the loss; a loss",
         "  rise there may be capacity, not the technique. Compare B3 to B1.",
@@ -155,13 +186,18 @@ def main():
                         help="use float16 (16GB T4; bfloat16 needs Ampere+)")
     parser.add_argument("--only", nargs="*",
                         help="run only these labels (default: all)")
+    parser.add_argument("--eval_iters", type=int, default=20,
+                        help="batches averaged per eval split (stage configs "
+                             "default to 100; lower keeps the sweep's eval "
+                             "overhead proportionate to a short --max_iters)")
     args = parser.parse_args()
 
     todo = [e for e in EXPERIMENTS if not args.only or e[0] in args.only]
+    requested = {label for label, _, _ in todo}
     results = [run_one(label, config, args.dataset, args.max_iters,
-                       args.device, args.t4)
+                       args.device, args.t4, args.eval_iters)
                for label, config, _ in todo]
-    write_report(results, args.dataset, args.max_iters)
+    write_report(results, args.dataset, args.max_iters, requested)
 
 
 if __name__ == "__main__":
