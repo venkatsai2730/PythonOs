@@ -132,7 +132,29 @@ DOMAINS = {
 
 
 def stream_domain(spec):
-    """Yield text records for one domain, or nothing if the dataset won't load."""
+    """Yield text records for one domain, or nothing if the dataset won't load.
+
+    Two failure points are handled separately, because they need different
+    responses:
+
+      load-time  the dataset id is gone/renamed/gated/uses an unsupported
+                 loading script. Nothing has been collected yet, so this
+                 domain contributes 0 docs — logged and skipped.
+
+      mid-stream a network read (a parquet shard fetch) times out and
+                 huggingface_hub's own retry logic exhausts its attempts.
+                 HF Hub throttles unauthenticated requests harder, which is
+                 exactly why this shows up as a real, recurring failure here
+                 rather than a one-off — see the "unauthenticated requests"
+                 warning printed at the start of a run; setting HF_TOKEN
+                 reduces how often this triggers, but does not guarantee it
+                 away. Either way, records already yielded for this domain by
+                 this point are real and already written to the .bin file —
+                 discarding them over one bad shard would throw away good
+                 data for no reason. So this domain simply stops here with
+                 whatever it already collected, instead of crashing the
+                 whole corpus build.
+    """
     from datasets import load_dataset
     kwargs = dict(split=spec["split"], streaming=True)
     if spec.get("data_dir"):
@@ -144,8 +166,19 @@ def stream_domain(spec):
         print(f"  ! could not load {spec['dataset']}: {exc}")
         print(f"  ! skipping this domain — the slice will be built without it")
         return
+
     extract = spec["extract"]
-    for rec in ds:
+    iterator = iter(ds)
+    while True:
+        try:
+            rec = next(iterator)
+        except StopIteration:
+            return
+        except Exception as exc:                                # noqa: BLE001
+            print(f"  ! network error mid-stream for {spec['dataset']}: {exc}")
+            print(f"  ! stopping this domain here — keeping what was already "
+                  f"collected rather than losing the whole build over it")
+            return
         text = extract(rec)
         if text and len(text) >= MIN_CHARS:
             yield text
