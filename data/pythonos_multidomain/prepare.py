@@ -51,11 +51,19 @@ VAL_FRACTION = 0.02          # held-out fraction, per domain
 # HF's streaming shuffle holds this many RAW records in memory at once, before
 # our per-record extraction ever runs. deepmind/code_contests records are
 # unusually heavy (each carries a `solutions` list that can hold hundreds of
-# full programs), and 10,000 of them was enough to get the process OOM-killed
-# on a memory-constrained free Colab runtime (Kaggle's session had enough RAM
-# to absorb it at the same target). This still gives a reasonable local
-# shuffle; it just isn't as global as a bigger buffer would be.
-SHUFFLE_BUFFER = 2_000
+# full programs, plus public/private/generated test cases we don't even use),
+# and this was enough to get the process OOM-killed on a memory-constrained
+# free Colab runtime (Kaggle's session had enough RAM to absorb the same
+# target). 10,000 -> 2,000 made no measurable difference, which means the
+# buffer wasn't the only thing scaling memory linearly here — so this cuts
+# hard rather than guessing again in small steps. 200 records is a small
+# enough window that memory should no longer be the constraint; if it still
+# OOMs at this size, the buffer isn't the actual driver and the fix needs to
+# be a different dataset for this domain, not a smaller number here.
+# Trade-off: a smaller buffer means less global shuffling — records within
+# any given ~200-record window of the source order end up adjacent more
+# often. Fine for a nano validation slice; would matter more at full scale.
+SHUFFLE_BUFFER = 200
 MIN_CHARS = 32               # drop near-empty records
 
 
