@@ -130,20 +130,43 @@ def _dialogue(rec):
 
 # Edit these to change the mix. `weight` is the share of the token budget.
 # Weights are normalised, so they need not sum to 1.
+#
+# Two source types:
+#   'hf'   stream a Hugging Face dataset (needs dataset/split/extract; see
+#          stream_domain()). Subject to HF Hub's network retries and its
+#          streaming shuffle's memory footprint, which scales with how heavy
+#          that dataset's own record schema is.
+#   'git'  shallow-clone a plain git repo and read its files directly (needs
+#          git_url; see stream_git_repo()). No parquet/Arrow materialisation,
+#          no HF Hub throttling, no shuffle-buffer memory pressure — ordinary
+#          files on disk. Chosen for dsa after deepmind/code_contests proved
+#          unreliable across two cloud notebook platforms: Kaggle succeeded
+#          once, but Colab's smaller RAM budget OOM-killed the process on
+#          that dataset's records (each carries hundreds of solutions/test
+#          cases per problem) even after the shuffle buffer was cut 50x.
+#          TheAlgorithms/Python is organised into folders that map almost
+#          exactly onto the doc's DSA topic list (dynamic_programming/,
+#          graphs/, searches/, sorts/, backtracking/, greedy_methods/, ...),
+#          MIT licensed, and pure Python. Trade-off: this gives worked
+#          algorithm implementations, not paired (problem statement, verified
+#          solution) examples the way code_contests did — a different, not
+#          strictly worse, training signal for a nano validation corpus.
 DOMAINS = {
-    # codeparrot/apps used a legacy HF "loading script", which the datasets
-    # library has dropped support for entirely (any version, any machine) —
-    # deepmind/code_contests is parquet-native and covers the same niche
-    # (competitive programming problem + solution).
-    "dsa": dict(dataset="deepmind/code_contests", split="train", data_dir=None,
-                extract=_code_contests, weight=0.30),
-    "ml": dict(dataset="codeparrot/codeparrot-clean", split="train", data_dir=None,
-               extract=_code, weight=0.30),
-    "agentic": dict(dataset="glaiveai/glaive-function-calling-v2", split="train",
-                    data_dir=None, extract=_dialogue, weight=0.20),
-    "theory": dict(dataset="open-web-math/open-web-math", split="train",
-                   data_dir=None, extract=_text, weight=0.20),
+    "dsa": dict(source="git",
+                git_url="https://github.com/TheAlgorithms/Python.git",
+                weight=0.30),
+    "ml": dict(source="hf", dataset="codeparrot/codeparrot-clean", split="train",
+               data_dir=None, extract=_code, weight=0.30),
+    "agentic": dict(source="hf", dataset="glaiveai/glaive-function-calling-v2",
+                    split="train", data_dir=None, extract=_dialogue, weight=0.20),
+    "theory": dict(source="hf", dataset="open-web-math/open-web-math",
+                   split="train", data_dir=None, extract=_text, weight=0.20),
 }
+
+GIT_TEXT_EXTENSIONS = {'.py', '.md', '.rst'}
+GIT_SKIP_DIRS = {'.git', '__pycache__', '.github', 'node_modules'}
+GIT_MAX_FILE_BYTES = 200_000
+GIT_MIN_FILE_BYTES = MIN_CHARS
 
 
 def stream_domain(spec):
@@ -199,6 +222,70 @@ def stream_domain(spec):
             yield text
 
 
+def stream_git_repo(git_url, cache_dir):
+    """Yield file contents from a shallow clone of a git repo.
+
+    Reused (and simplified) from data/ecc_repo/prepare.py's file-collection
+    pattern. A clone failure (bad URL, no network, git missing) is handled
+    the same way an HF load failure is: log it, skip this domain, let the
+    rest of the build carry on.
+    """
+    import hashlib
+    import subprocess
+
+    if not os.path.isdir(os.path.join(cache_dir, '.git')):
+        print(f"  cloning {git_url} (shallow)...")
+        try:
+            os.makedirs(os.path.dirname(cache_dir), exist_ok=True)
+            subprocess.run(
+                ['git', 'clone', '--depth', '1', git_url, cache_dir],
+                check=True, capture_output=True, text=True, timeout=300)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                OSError) as exc:
+            print(f"  ! could not clone {git_url}: {exc}")
+            print(f"  ! skipping this domain — the slice will be built without it")
+            return
+    else:
+        print(f"  reusing existing clone at {cache_dir}")
+
+    seen = set()
+    for root, dirs, files in os.walk(cache_dir):
+        dirs[:] = sorted(d for d in dirs if d not in GIT_SKIP_DIRS)
+        for name in sorted(files):
+            if os.path.splitext(name)[1].lower() not in GIT_TEXT_EXTENSIONS:
+                continue
+            path = os.path.join(root, name)
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            if not (GIT_MIN_FILE_BYTES <= size <= GIT_MAX_FILE_BYTES):
+                continue
+            try:
+                with open(path, 'r', encoding='utf-8') as handle:
+                    text = handle.read()
+            except (UnicodeDecodeError, OSError):
+                continue
+            digest = hashlib.sha256(text.encode('utf-8')).hexdigest()
+            if digest in seen:
+                continue
+            seen.add(digest)
+            yield text
+
+
+def records_for(name, spec):
+    """Dispatch to the right generator for this domain's source type."""
+    if spec.get('source') == 'git':
+        cache_dir = os.path.join(HERE, '_git_cache', name)
+        return stream_git_repo(spec['git_url'], cache_dir)
+    return stream_domain(spec)
+
+
+def source_label(spec):
+    """Human-readable source, for progress printing and the manifest."""
+    return spec.get('dataset') or spec.get('git_url')
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", type=float, default=200e6,
@@ -226,9 +313,9 @@ def main():
             quota = quotas[name]
             val_quota = max(int(quota * VAL_FRACTION), 50_000)
             got = {"train": 0, "val": 0}
-            print(f"[{name}] target {quota:,} tokens from {spec['dataset']}")
+            print(f"[{name}] target {quota:,} tokens from {source_label(spec)}")
 
-            for text in stream_domain(spec):
+            for text in records_for(name, spec):
                 # exact dedup across the whole corpus: repeated licence headers,
                 # vendored copies and boilerplate otherwise land on both sides
                 # of the split and inflate held-out performance
@@ -279,7 +366,7 @@ def main():
         "val_tokens": written["val"],
         "train_sha256": hashers["train"].hexdigest(),
         "val_sha256": hashers["val"].hexdigest(),
-        "domains": {name: {"dataset": DOMAINS[name]["dataset"],
+        "domains": {name: {"source": source_label(DOMAINS[name]),
                            "weight": DOMAINS[name]["weight"],
                            **per_domain[name]} for name in DOMAINS},
         "domains_contributed": contributed,

@@ -10,6 +10,7 @@ venv/
 *.bin
 data/*/input.txt
 data/*/meta.pkl
+data/*/_git_cache/
 
 # checkpoints / run outputs
 out/
