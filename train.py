@@ -212,8 +212,8 @@ def main(argv):
         print(f"vocab_size={vocab} (from {data_dir}/meta.pkl)")
         cfg = cfg.__class__(**{**vars(cfg), 'vocab_size': vocab})
     elif cfg.vocab_size is None:
-        print("no meta.pkl; defaulting vocab_size to 50304")
-        cfg = cfg.__class__(**{**vars(cfg), 'vocab_size': 50304})
+        print("no meta.pkl; defaulting vocab_size to 49152 (StarCoder2 BPE)")
+        cfg = cfg.__class__(**{**vars(cfg), 'vocab_size': 49152})
 
     checkpoint = None
     start_step, best_val = 0, float('inf')

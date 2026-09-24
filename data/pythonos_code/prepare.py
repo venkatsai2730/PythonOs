@@ -1,7 +1,8 @@
 """
 Prepare the FROZEN Python code corpus slice for PythonOS-1B nano validation.
 
-Streams a Python subset of the-stack-dedup, tokenises with GPT-2 BPE, and
+Streams a Python subset of the-stack-dedup, tokenises with StarCoder2 BPE
+(see pythonos/tokenizer.py for why this and not GPT-2/cl100k/o200k), and
 writes train.bin / val.bin / meta.pkl plus a manifest.json recording exactly
 what was produced.
 
@@ -22,11 +23,15 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 
 import numpy as np
-import tiktoken
 from datasets import load_dataset
 from tqdm import tqdm
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
+from pythonos import tokenizer as tok
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Held-out fraction. Floored at 100k tokens so a small dev slice still has a
@@ -50,8 +55,8 @@ args = parser.parse_args()
 target_tokens = int(args.target)
 val_tokens = max(int(target_tokens * VAL_FRACTION), 100_000)
 
-enc = tiktoken.get_encoding("gpt2")
-eot = enc.eot_token  # 50256, document separator
+eot = tok.eot_token()
+true_vocab = tok.vocab_size()
 
 load_kwargs = dict(split=args.split, streaming=True)
 if "the-stack" in args.dataset:
@@ -59,7 +64,7 @@ if "the-stack" in args.dataset:
 print(f"streaming {args.dataset} ({load_kwargs.get('data_dir', 'default')})")
 ds = load_dataset(args.dataset, **load_kwargs).shuffle(seed=SEED, buffer_size=10_000)
 
-# GPT-2 vocab is 50257, so uint16 (max 65535) is safe
+# StarCoder2 vocab is 49,152, so uint16 (max 65535) is safe
 train_path = os.path.join(HERE, "train.bin")
 val_path = os.path.join(HERE, "val.bin")
 
@@ -81,7 +86,7 @@ with open(val_path, "wb") as f_val, open(train_path, "wb") as f_train, \
         if not content:
             continue
 
-        ids = enc.encode_ordinary(content)
+        ids = tok.encode_ordinary(content)
         ids.append(eot)
         arr = np.asarray(ids, dtype=np.uint16)
 
@@ -95,11 +100,10 @@ with open(val_path, "wb") as f_val, open(train_path, "wb") as f_train, \
         if written["val"] + written["train"] >= target_tokens:
             break
 
-# 50257 padded up to the nearest multiple of 64. train.py reads vocab_size from
-# here; the padding rows are never emitted by the tokenizer but make the lm_head
-# matmul meaningfully faster on tensor cores.
-PADDED_VOCAB = 50304
-meta = {"vocab_size": PADDED_VOCAB, "true_vocab_size": enc.n_vocab, "encoding": "gpt2"}
+# StarCoder2's 49,152 is already a multiple of 64 -- no padding step needed
+# the way GPT-2's 50,257 -> 50,304 was. train.py reads vocab_size from here.
+meta = {"vocab_size": true_vocab, "true_vocab_size": true_vocab,
+        "encoding": tok.ENCODING_NAME}
 with open(os.path.join(HERE, "meta.pkl"), "wb") as f:
     import pickle
     pickle.dump(meta, f)
@@ -107,9 +111,9 @@ with open(os.path.join(HERE, "meta.pkl"), "wb") as f:
 manifest = {
     "dataset": args.dataset,
     "data_dir": load_kwargs.get("data_dir"),
-    "tokenizer": "tiktoken/gpt2",
-    "vocab_size": PADDED_VOCAB,
-    "true_vocab_size": enc.n_vocab,
+    "tokenizer": f"huggingface-tokenizers/{tok.HF_TOKENIZER_ID}",
+    "vocab_size": true_vocab,
+    "true_vocab_size": true_vocab,
     "seed": SEED,
     "target_tokens": target_tokens,
     "train_tokens": written["train"],

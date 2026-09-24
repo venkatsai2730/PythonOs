@@ -4,9 +4,22 @@ Stage A is the dense baseline; every later stage is compared against it on
 **byte-identical data, same seed, same data order**. See NOTICE.md for
 provenance and the attribution table.
 
+> **Tokenizer changed after these figures were recorded.** Everything below
+> was measured with GPT-2 BPE (vocab 50,304, padded). The corpus builders and
+> `GPTConfig`'s default now use StarCoder2 BPE (vocab 49,152 — see
+> `pythonos/tokenizer.py` for why) after measuring it 27% more token-efficient
+> on this repo's own code-heavy corpus. Params shift slightly with the smaller
+> vocab (e.g. Stage A: ~153.24M total under GPT-2 -> ~152.06M under
+> StarCoder2) but the *shape* of every finding below — B1 beating dense, mHC's
+> near-identity collapse, the load-balance blind spot, and so on — does not
+> depend on which BPE vocabulary produced the token ids. A corpus built with
+> the old tokenizer is not byte-comparable to one built with the new one:
+> re-verify `manifest.json`'s `tokenizer` field, not just its sha256, before
+> treating any two runs as the same frozen slice.
+
 ## Stage A — dense baseline (current)
 
-No MoE, no mHC, no BLT. Standard pre-norm transformer, GPT-2 BPE.
+No MoE, no mHC, no BLT. Standard pre-norm transformer, StarCoder2 BPE.
 
 | Step | Command | Gate | Status |
 |---|---|---|---|

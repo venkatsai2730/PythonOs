@@ -50,6 +50,46 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pythonos import GPT, GPTConfig                        # noqa: E402
 from pythonos.data import data_dir_for, verify_corpus      # noqa: E402
+from pythonos import tokenizer as tok                       # noqa: E402
+
+
+def _tokenizer_for(encoding):
+    """(encode_fn, decode_fn, true_vocab) for the encoding a corpus was
+    actually built with, read from its manifest.json.
+
+    Corpora built before the tokenizer switch (see pythonos/tokenizer.py)
+    recorded encoding='gpt2'; this still decodes those correctly via
+    tiktoken, an optional/legacy-only import. Anything else is assumed to be
+    the current tokenizer. Using the checkpoint's own recorded encoding
+    (rather than always assuming the current one) matters for both
+    count_bytes() and --sample: decoding token ids with the wrong tokenizer
+    produces garbage, not an error.
+    """
+    if encoding == 'gpt2':
+        import tiktoken
+        enc = tiktoken.get_encoding('gpt2')
+        return enc.encode_ordinary, enc.decode, enc.n_vocab
+    return tok.encode_ordinary, tok.decode, tok.vocab_size()
+
+
+def _encoding_from_manifest(manifest):
+    """The corpus's actual tokenizer, inferred robustly across manifest
+    schema versions.
+
+    Manifests written before the StarCoder2 switch record only
+    'tokenizer': 'tiktoken/gpt2' -- no separate 'encoding' key at all (see
+    data/ecc_repo/manifest.json from before this change). Defaulting a
+    missing 'encoding' straight to the current tokenizer would silently
+    decode a GPT-2-era corpus's token ids with the wrong vocabulary: mostly
+    out-of-range ids get dropped by count_bytes()'s guard rather than raise,
+    so this would look like a working but wrong byte count, not a crash.
+    """
+    encoding = manifest.get('encoding')
+    if encoding:
+        return encoding
+    if 'gpt2' in str(manifest.get('tokenizer', '')):
+        return 'gpt2'
+    return tok.ENCODING_NAME
 
 
 def load_model(ckpt_path, device):
@@ -64,15 +104,13 @@ def load_model(ckpt_path, device):
     return model.to(device).eval(), blob, config
 
 
-def count_bytes(token_ids, encoding='gpt2'):
+def count_bytes(token_ids, encoding=tok.ENCODING_NAME):
     """Exact UTF-8 byte length of the text these tokens decode to."""
-    import tiktoken
-    encoder = tiktoken.get_encoding(encoding)
-    true_vocab = encoder.n_vocab
+    _, decode, true_vocab = _tokenizer_for(encoding)
     # padding rows above the real vocabulary never appear in the data, but
     # guard anyway so a corrupt file cannot crash the decoder
     usable = [int(t) for t in token_ids if int(t) < true_vocab]
-    return len(encoder.decode(usable).encode('utf-8'))
+    return len(decode(usable).encode('utf-8'))
 
 
 def unigram_baseline(data_dir, vocab_size):
@@ -185,8 +223,7 @@ def main():
         tokens = np.memmap(os.path.join(data_dir, f'{split}.bin'),
                            dtype=np.uint16, mode='r')
         probe = min(len(tokens), 200_000)
-        probe_bytes = count_bytes(tokens[:probe],
-                                  manifest.get('encoding', 'gpt2'))
+        probe_bytes = count_bytes(tokens[:probe], _encoding_from_manifest(manifest))
         bytes_per_token = probe_bytes / probe
         bits_per_byte = bits_per_token / bytes_per_token
         info.update(bits_per_token=bits_per_token, bits_per_byte=bits_per_byte,
@@ -216,13 +253,14 @@ def main():
 
     if args.sample:
         print("\n--- sample continuation ---")
-        import tiktoken
-        encoder = tiktoken.get_encoding('gpt2')
+        # use the checkpoint's own recorded encoding, not always the current
+        # one -- generating with the wrong tokenizer decodes to garbage, not
+        # an error, so this must match what the corpus was actually built with
+        encode, decode, true_vocab = _tokenizer_for(_encoding_from_manifest(manifest))
         prompt = "def "
-        ids = torch.tensor([encoder.encode_ordinary(prompt)], device=args.device)
+        ids = torch.tensor([encode(prompt)], device=args.device)
         out = model.generate(ids, args.sample_tokens, temperature=0.8, top_k=40)
-        text = encoder.decode([int(t) for t in out[0]
-                               if int(t) < encoder.n_vocab])
+        text = decode([int(t) for t in out[0] if int(t) < true_vocab])
         print(text)
         print("--- end sample ---")
 

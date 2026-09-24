@@ -20,8 +20,9 @@ wandb_run_name = 'dev-ecc-cpu'
 
 dataset = 'ecc_repo'
 
-# 16.1M params. Dominated by the 50304-row tied embedding, which is also why
-# CPU throughput is what it is: the output matmul is the bulk of the work.
+# ~16M params. Dominated by the tied embedding (49,152 rows -- StarCoder2 BPE,
+# see pythonos/tokenizer.py), which is also why CPU throughput is what it is:
+# the output matmul is the bulk of the work.
 n_layer = 4
 n_head = 4
 n_embd = 256

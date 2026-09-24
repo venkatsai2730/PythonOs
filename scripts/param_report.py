@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pythonos import GPTConfig, GPT
 
-NANO = dict(block_size=1024, vocab_size=50304, n_layer=8, n_head=16,
+NANO = dict(block_size=1024, vocab_size=49152, n_layer=8, n_head=16,
             n_embd=1024, dropout=0.0, bias=False)
 MLA = dict(use_mla=True, kv_lora_rank=256, q_lora_rank=512,
            qk_nope_head_dim=64, qk_rope_head_dim=32, v_head_dim=64)
@@ -36,7 +36,7 @@ STAGES = {
                             **MLA, **MOE),
 }
 
-print("NANO SCALE (d_model 1024, 8 layers, vocab 50304)")
+print("NANO SCALE (d_model 1024, 8 layers, vocab 49152 -- StarCoder2 BPE)")
 print(f"  {'stage':20s} {'total':>10s} {'active':>10s} {'active vs A':>13s}  note")
 baseline = None
 for name, over in STAGES.items():
@@ -54,8 +54,8 @@ for name, over in STAGES.items():
           f"{delta:+12.2f}%  {note}")
 
 print("\nFULL SPEC (d_model 2048, 32 layers, 16 experts = 2 shared + 14 routed,")
-print("           top-2, 31 MoE layers, vocab 50304)")
-d, L, vocab, moe_layers = 2048, 32, 50304, 31
+print("           top-2, 31 MoE layers, vocab 49152 -- StarCoder2 BPE)")
+d, L, vocab, moe_layers = 2048, 32, 49152, 31
 E_total, E_active = 16, 4
 base = L * 4 * d * d + vocab * d          # attention + embeddings
 dense_ff = (L - moe_layers) * 2 * d * 4 * d

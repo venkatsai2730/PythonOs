@@ -46,3 +46,16 @@ published description — the MoE orthogonality and variance losses, and the
 hyper-connection initialisation schemes — that is stated in the relevant
 docstring and in `STAGES.md`. Those are design choices under test, not
 reproductions.
+
+## Third-party artifact in use, not just an idea reimplemented
+
+Everything above is an architectural technique this project reimplemented
+from a published description. The tokenizer is different in kind: it is a
+third party's actual trained artifact, downloaded and used as-is, not
+reimplemented.
+
+| Component | Source |
+|---|---|
+| Tokenizer (StarCoder2 BPE, `bigcode/starcoder2-15b`) | BigCode / StarCoder2 (2024), via `huggingface_hub` |
+
+See `pythonos/tokenizer.py` for why this tokenizer and not GPT-2/cl100k/o200k.

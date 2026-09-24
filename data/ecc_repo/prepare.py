@@ -38,9 +38,13 @@ import json
 import os
 import pickle
 import random
+import sys
 
 import numpy as np
-import tiktoken
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
+from pythonos import tokenizer as tok
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEED = 1337
@@ -140,13 +144,13 @@ def main():
     cut = max(1, int(len(documents) * (1 - args.val_fraction)))
     parts = {'train': documents[:cut], 'val': documents[cut:]}
 
-    encoder = tiktoken.get_encoding('gpt2')
-    separator = encoder.eot_token
+    separator = tok.eot_token()
+    true_vocab = tok.vocab_size()
     written, digests = {}, {}
     for split, docs in parts.items():
         ids = []
         for doc in docs:
-            ids.extend(encoder.encode_ordinary(doc))
+            ids.extend(tok.encode_ordinary(doc))
             ids.append(separator)   # document boundary
         array = np.asarray(ids, dtype=np.uint16)
         path = os.path.join(HERE, f'{split}.bin')
@@ -155,19 +159,18 @@ def main():
         digests[split] = hashlib.sha256(array.tobytes()).hexdigest()
         print(f"{split}: {len(docs):,} docs -> {len(array):,} tokens")
 
-    # 50257 padded to a multiple of 64: the padding rows are never emitted but
-    # make the output matmul meaningfully faster on tensor cores
-    padded_vocab = 50304
+    # StarCoder2's 49,152 is already a multiple of 64 -- no padding step
+    # needed the way GPT-2's 50,257 -> 50,304 was.
     with open(os.path.join(HERE, 'meta.pkl'), 'wb') as handle:
-        pickle.dump({'vocab_size': padded_vocab,
-                     'true_vocab_size': encoder.n_vocab,
-                     'encoding': 'gpt2'}, handle)
+        pickle.dump({'vocab_size': true_vocab,
+                     'true_vocab_size': true_vocab,
+                     'encoding': tok.ENCODING_NAME}, handle)
 
     manifest = {
         'source': args.name,
         'source_path': source,
-        'tokenizer': 'tiktoken/gpt2',
-        'vocab_size': padded_vocab,
+        'tokenizer': f'huggingface-tokenizers/{tok.HF_TOKENIZER_ID}',
+        'vocab_size': true_vocab,
         'seed': SEED,
         'documents': len(documents),
         'duplicates_dropped': duplicates,

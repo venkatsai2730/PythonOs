@@ -5,14 +5,15 @@ Unlike data/pythonos_code (a single generic-Python slice), this builds the
 corpus that matches the *use case*: the four target domains, mixed in fixed
 proportions, so a nano run actually sees DSA / ML / Agentic / Theory text.
 
-  DSA      competitive-programming problems + solutions
+  DSA      worked algorithm implementations (git repo, see DOMAINS below)
   ML       Python / PyTorch code
   Agentic  tool-calling / function-calling dialogues (JSON-shaped)
   Theory   math + CS prose
 
 Output is byte-identical in FORMAT to every other slice here — a flat uint16
-GPT-2-BPE token stream with EOT document separators, plus meta.pkl and
-manifest.json — so train.py needs no changes. The manifest additionally records
+token stream (StarCoder2 BPE; see pythonos/tokenizer.py) with EOT document
+separators, plus meta.pkl and manifest.json — so train.py needs no changes
+(it reads vocab_size from meta.pkl). The manifest additionally records
 per-domain token counts for provenance.
 
   $ python data/pythonos_multidomain/prepare.py                 # ~200M tokens
@@ -41,9 +42,13 @@ import hashlib
 import json
 import os
 import pickle
+import sys
 
 import numpy as np
-import tiktoken
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
+from pythonos import tokenizer as tok
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEED = 1337
@@ -293,8 +298,8 @@ def main():
     args = parser.parse_args()
     target_tokens = int(args.target)
 
-    enc = tiktoken.get_encoding("gpt2")
-    eot = enc.eot_token
+    eot = tok.eot_token()
+    true_vocab = tok.vocab_size()
 
     total_weight = sum(d["weight"] for d in DOMAINS.values())
     quotas = {name: int(target_tokens * d["weight"] / total_weight)
@@ -328,7 +333,7 @@ def main():
                 # whole document never straddles the split (no memorisation leak)
                 split = "val" if got["val"] < val_quota else "train"
 
-                ids = enc.encode_ordinary(text)
+                ids = tok.encode_ordinary(text)
                 ids.append(eot)
                 buf = np.asarray(ids, dtype=np.uint16).tobytes()
                 handles[split].write(buf)
@@ -350,16 +355,17 @@ def main():
     if not contributed:
         raise SystemExit("no domain produced any data — check dataset access")
 
-    PADDED_VOCAB = 50304        # 50257 padded to a multiple of 64 (tensor cores)
-    meta = {"vocab_size": PADDED_VOCAB, "true_vocab_size": enc.n_vocab,
-            "encoding": "gpt2"}
+    # StarCoder2's vocab (49,152) is already a multiple of 64 — see
+    # pythonos/tokenizer.py for why this tokenizer and not GPT-2/cl100k/o200k.
+    meta = {"vocab_size": true_vocab, "true_vocab_size": true_vocab,
+            "encoding": tok.ENCODING_NAME}
     with open(os.path.join(HERE, "meta.pkl"), "wb") as handle:
         pickle.dump(meta, handle)
 
     manifest = {
         "corpus": "pythonos_multidomain",
-        "tokenizer": "tiktoken/gpt2",
-        "vocab_size": PADDED_VOCAB,
+        "tokenizer": f"huggingface-tokenizers/{tok.HF_TOKENIZER_ID}",
+        "vocab_size": true_vocab,
         "seed": SEED,
         "target_tokens": target_tokens,
         "train_tokens": written["train"],

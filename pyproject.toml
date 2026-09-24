@@ -10,11 +10,16 @@ requires-python = ">=3.10"
 dependencies = [
     "torch>=2.0",
     "numpy",
+    # pythonos.tokenizer (StarCoder2 BPE) -- needed for corpus prep AND to
+    # decode model output in scripts/evaluate.py, so this is a base
+    # dependency, not corpus-build-only. huggingface-hub comes along as
+    # tokenizers' own dependency (used for Tokenizer.from_pretrained).
+    "tokenizers",
 ]
 
 [project.optional-dependencies]
-# only needed to build the corpus (data/pythonos_code/prepare.py)
-data = ["tiktoken", "datasets", "tqdm", "requests"]
+# only needed to build a corpus (data/*/prepare.py)
+data = ["datasets", "tqdm", "requests"]
 # optional run logging
 logging = ["wandb"]
 
