@@ -48,7 +48,14 @@ import tiktoken
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEED = 1337
 VAL_FRACTION = 0.02          # held-out fraction, per domain
-SHUFFLE_BUFFER = 10_000
+# HF's streaming shuffle holds this many RAW records in memory at once, before
+# our per-record extraction ever runs. deepmind/code_contests records are
+# unusually heavy (each carries a `solutions` list that can hold hundreds of
+# full programs), and 10,000 of them was enough to get the process OOM-killed
+# on a memory-constrained free Colab runtime (Kaggle's session had enough RAM
+# to absorb it at the same target). This still gives a reasonable local
+# shuffle; it just isn't as global as a bigger buffer would be.
+SHUFFLE_BUFFER = 2_000
 MIN_CHARS = 32               # drop near-empty records
 
 
