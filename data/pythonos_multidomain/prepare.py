@@ -42,6 +42,7 @@ import hashlib
 import json
 import os
 import pickle
+import re
 import sys
 
 import numpy as np
@@ -133,6 +134,74 @@ def _dialogue(rec):
     return joined or None
 
 
+# codeparrot-clean is generic scraped GitHub Python, not filtered for ML
+# content at all -- verified by sampling: of 3 raw records, only 1 (sklearn
+# internals) was actually ML-related; the other 2 were a WebSocket library
+# and Django framework code. Requiring a real ML-library import near the top
+# of the file (where imports live) fixes this. Measured on 500 real streamed
+# records: 3.8% match rate, all genuine ML/DL code (sklearn, TensorFlow, an
+# MNE neuroscience-ML example) -- precise, at the cost of needing to stream
+# roughly 25x more raw records to fill the same token quota.
+ML_LIBS = ('torch', 'tensorflow', 'keras', 'sklearn', 'transformers', 'jax',
+           'xgboost', 'lightgbm')
+
+
+def _code_ml_only(rec):
+    content = rec.get("content") or rec.get("text")
+    if not content:
+        return None
+    head = content[:3000]  # imports are almost always near the top of a file
+    if not any(f"import {lib}" in head or f"from {lib}" in head
+               for lib in ML_LIBS):
+        return None
+    return content
+
+
+# open-web-math's "math-relevance" filter is noisy for this purpose: of 3
+# raw samples, only 1 was genuinely on-topic (a Bayes'-theorem post, and even
+# that had a text-encoding artifact); the other 2 were a physics-forum thread
+# and documentation for an unrelated Java test framework. Wikipedia, title-
+# filtered to CS-theory topics, is both more reliable (wikimedia/wikipedia is
+# a standard, script-free, well-maintained HF dataset) and more precise:
+# verified on 20,000 real streamed articles, every title match (Algorithm,
+# Kolmogorov complexity, Alan Turing, ...) was genuinely on-topic encyclopedia
+# prose, not a link list or forum chatter.
+#
+# Dropped 'computational' as a standalone keyword: too generic, pulls in
+# computational biology/chemistry/linguistics articles that aren't CS theory.
+CS_THEORY_KEYWORDS = (
+    'algorithm', 'complexity', 'np-', 'np complete', 'turing', 'automaton',
+    'automata', 'computability', 'big o notation', 'asymptotic',
+    'graph theory', 'tree (data structure)', 'sorting algorithm',
+    'dynamic programming', 'data structure', 'recursion', 'binary search',
+    'hash table', 'red-black tree', 'b-tree', 'heap (data structure)',
+)
+# 'big o' -> 'big o notation': plain 'big o' matched "Big Oil" (a 20,000-
+# article scale check caught this, same prefix-collision category as
+# 'algorithm' matching "Algorithms-Aided Design"). The genuine article is
+# titled exactly "Big O notation", so the fuller phrase loses no real recall.
+# Plain substring matching on 'turing' was a real bug, caught by sampling, not
+# guessed: it matched "Denaturing ...", "... Featuring ...", and
+# "... Manufacturing ..." -- 'turing' is a literal substring of all three.
+# A leading word-boundary fixes exactly this (requires 'turing' to START a
+# word) while still matching "Turing machine", "Alan Turing", "Turing test",
+# and still matching 'algorithm' as a prefix of "algorithms"/"algorithmic".
+# It does NOT fully solve keyword-match ambiguity in general -- "Algorithms-
+# Aided Design" (an architecture/design term) still matches 'algorithm'
+# because the word genuinely is there, just not in the CS sense. That residual
+# imprecision is accepted; it's rare next to the 'turing' bug's blast radius
+# (-ing words are common) and far better than open-web-math's ~67% miss rate.
+_CS_THEORY_PATTERNS = [re.compile(r'\b' + re.escape(kw))
+                       for kw in CS_THEORY_KEYWORDS]
+
+
+def _cs_theory_article(rec):
+    title = (rec.get("title") or "").lower()
+    if not any(pat.search(title) for pat in _CS_THEORY_PATTERNS):
+        return None
+    return rec.get("text")
+
+
 # Edit these to change the mix. `weight` is the share of the token budget.
 # Weights are normalised, so they need not sum to 1.
 #
@@ -160,12 +229,18 @@ DOMAINS = {
     "dsa": dict(source="git",
                 git_url="https://github.com/TheAlgorithms/Python.git",
                 weight=0.30),
+    # ML content filter, not just "Python code" -- see _code_ml_only() above
+    # for why the unfiltered stream was wrong 2 times out of 3.
     "ml": dict(source="hf", dataset="codeparrot/codeparrot-clean", split="train",
-               data_dir=None, extract=_code, weight=0.30),
+               data_dir=None, extract=_code_ml_only, weight=0.30),
     "agentic": dict(source="hf", dataset="glaiveai/glaive-function-calling-v2",
                     split="train", data_dir=None, extract=_dialogue, weight=0.20),
-    "theory": dict(source="hf", dataset="open-web-math/open-web-math",
-                   split="train", data_dir=None, extract=_text, weight=0.20),
+    # Wikipedia, title-filtered to CS theory -- see _cs_theory_article() above
+    # for why open-web-math was replaced (noisy: forum chatter, unrelated docs).
+    # wikimedia/wikipedia is script-free (parquet) and needs a dated config.
+    "theory": dict(source="hf", dataset="wikimedia/wikipedia",
+                   config="20231101.en", split="train", data_dir=None,
+                   extract=_cs_theory_article, weight=0.20),
 }
 
 GIT_TEXT_EXTENSIONS = {'.py', '.md', '.rst'}
@@ -202,8 +277,11 @@ def stream_domain(spec):
     kwargs = dict(split=spec["split"], streaming=True)
     if spec.get("data_dir"):
         kwargs["data_dir"] = spec["data_dir"]
+    args = [spec["dataset"]]
+    if spec.get("config"):  # e.g. wikimedia/wikipedia needs a dated snapshot name
+        args.append(spec["config"])
     try:
-        ds = load_dataset(spec["dataset"], **kwargs)
+        ds = load_dataset(*args, **kwargs)
         ds = ds.shuffle(seed=SEED, buffer_size=SHUFFLE_BUFFER)
     except Exception as exc:                                    # noqa: BLE001
         print(f"  ! could not load {spec['dataset']}: {exc}")
