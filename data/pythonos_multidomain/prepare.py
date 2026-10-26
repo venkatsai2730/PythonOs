@@ -76,55 +76,14 @@ MIN_CHARS = 32               # drop near-empty records
 # --- per-domain extractors ---------------------------------------------------
 # Each turns one dataset record into a training string, or None to skip it.
 # Datasets differ in schema, so the extraction is explicit rather than guessed.
-
-def _code(rec):
-    return rec.get("content") or rec.get("text")
-
-
-def _text(rec):
-    return rec.get("text")
-
-
-def _apps(rec):
-    """APPS-style: a problem statement plus (JSON-encoded) solutions list."""
-    question = rec.get("question") or rec.get("problem")
-    solutions = rec.get("solutions")
-    if isinstance(solutions, str):
-        try:
-            solutions = json.loads(solutions)
-        except (json.JSONDecodeError, TypeError):
-            solutions = [solutions]
-    first = solutions[0] if isinstance(solutions, list) and solutions else None
-    if not question:
-        return None
-    parts = [f"# Problem\n{question}"]
-    if first:
-        parts.append(f"\n\n# Solution\n{first}")
-    return "".join(parts)
-
-
-def _code_contests(rec):
-    """DeepMind CodeContests: problem description + a Python-looking solution.
-
-    `solutions.language` is a ClassLabel whose int<->name mapping is not
-    guaranteed to resolve under streaming, so the Python solution is picked by
-    a light content heuristic (has `def`/`print(`, no `#include`) rather than
-    trusting the label id. Good enough for a training-mix filter; this is not
-    trying to be an exact per-language classifier.
-    """
-    description = rec.get("description")
-    if not description:
-        return None
-    texts = (rec.get("solutions") or {}).get("solution") or []
-    solution = next((t for t in texts if t and "#include" not in t
-                     and ("def " in t or "print(" in t)), None)
-    if solution is None and texts:
-        solution = texts[0]
-    parts = [f"# Problem\n{description}"]
-    if solution:
-        parts.append(f"\n\n# Solution\n{solution}")
-    return "".join(parts)
-
+#
+# Removed: _code, _text (generic passthroughs, superseded by the filtered
+# extractors below once "ml"/"theory" needed actual relevance filters, not
+# just a schema reader), _apps, _code_contests (extractors for codeparrot/apps
+# and deepmind/code_contests, both abandoned as DSA sources for reliability
+# reasons -- see the DOMAINS comment below). None were referenced anywhere by
+# the time of removal; see git history if a future dataset needs this shape
+# of extractor again.
 
 def _dialogue(rec):
     """Function-calling / agentic dialogue: join system + chat if present."""
