@@ -11,6 +11,7 @@ venv/
 data/*/input.txt
 data/*/meta.pkl
 data/*/_git_cache/
+data/fireworks_sft/dataset.jsonl
 
 # checkpoints / run outputs
 out/
